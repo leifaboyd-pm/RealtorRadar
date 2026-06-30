@@ -1757,6 +1757,20 @@ const ALLOWED_EMAIL_DOMAIN = '@partnersmortgage.com';
    If costs become prohibitive, clear this constant and the app will require per-user keys. */
 const PARTNERS_API_KEY = '';  // e.g. 'sk-ant-api03-...'
 
+/* Cloudflare Worker gateway. When set, ALL AI calls route through it and the
+   API key lives server-side in the Worker — nothing in the browser, shared by
+   every user, no per-LO key setup. Leave '' to call the Anthropic API directly
+   with a per-user key (legacy mode).
+   NOTE: this must be the full endpoint the Worker forwards to Anthropic from.
+   Standard pass-through Workers mirror Anthropic's own path (/v1/messages). If
+   Aidan's Worker uses a different route (e.g. /anthropic/v1/messages), change
+   ONLY this line to match. */
+const WORKER_URL = 'https://pm-gateway.partnersmortgage88.workers.dev/v1/messages';
+
+/* The model used for ALL AI calls. Haiku is the low-cost option; switch to
+   'claude-sonnet-4-6' here (one line) if you want higher-quality research. */
+const AI_MODEL = 'claude-haiku-4-5-20251001';
+
 /* Email used as admin — only this user can edit the central templates document.
    Templates contain shared cadences, value menu defaults, brand facts, etc.
    When populated and matching the signed-in user, a "Publish templates" button appears in Settings. */
@@ -2730,33 +2744,37 @@ function setApiKey(k){
   if(k) localStorage.setItem(API_KEY_STORAGE, k);
   else localStorage.removeItem(API_KEY_STORAGE);
 }
-function hasApiKey(){ return !!getApiKey(); }
+function hasApiKey(){ return !!WORKER_URL || !!getApiKey(); }
 function isUsingSharedKey(){ return !getUserApiKey() && !!PARTNERS_API_KEY; }
 
 /* ========== AI LAYER ========== */
-async function callAnthropic({ system, messages, maxTokens=2500, tools=null, timeoutMs=90000 }){
+async function callAnthropic({ system, messages, maxTokens=2500, tools=null, timeoutMs=90000, model=null }){
+  const useWorker = !!WORKER_URL;
   const key = getApiKey();
-  if(!key){
+  // Only require a per-user key in legacy (direct) mode. Through the Worker the
+  // key is server-side, so no client key is needed.
+  if(!useWorker && !key){
     return { error:'no_key', text:'Add your Anthropic API key in Settings → AI to enable live AI features.' };
   }
   const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   const timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
   try {
     const body = {
-      model: 'claude-sonnet-4-6',
+      model: model || AI_MODEL,
       max_tokens: maxTokens,
       ...(system ? { system } : {}),
       messages,
       ...(tools ? { tools } : {}),
     };
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const endpoint = useWorker ? WORKER_URL : 'https://api.anthropic.com/v1/messages';
+    const headers = { 'content-type':'application/json', 'anthropic-version':'2023-06-01' };
+    if(!useWorker){
+      headers['x-api-key'] = key;
+      headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    }
+    const resp = await fetch(endpoint, {
       method:'POST',
-      headers:{
-        'content-type':'application/json',
-        'x-api-key': key,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true',
-      },
+      headers: headers,
       body: JSON.stringify(body),
       ...(controller ? { signal: controller.signal } : {}),
     });
@@ -2787,6 +2805,23 @@ async function callAnthropic({ system, messages, maxTokens=2500, tools=null, tim
   } finally {
     if(timer) clearTimeout(timer);
   }
+}
+
+/* Retry only TRANSIENT failures (rate limits, network blips) with backoff.
+   Does not retry timeouts (already waited the full budget), auth errors, or
+   missing-key errors — retrying those just wastes time. */
+async function callAnthropicRetry(opts, attempts){
+  attempts = attempts || 2;
+  var last;
+  for(var n = 0; n < attempts; n++){
+    last = await callAnthropic(opts);
+    if(!last.error) return last;
+    if(last.error !== 'rate' && last.error !== 'network') return last;
+    if(n < attempts - 1){
+      await new Promise(function(r){ setTimeout(r, 1500 * Math.pow(2, n)); }); // 1.5s, 3s, …
+    }
+  }
+  return last;
 }
 
 function parseJsonLoose(text){
@@ -7184,13 +7219,13 @@ var _lastViewKey = null;
 /* ========== DEEP RESEARCH (shared by Research tab + Discover) ========== */
 async function fetchDossier(agent, opts){
   opts = opts || {};
-  const res = await callAnthropic({
+  const res = await callAnthropicRetry({
     system: 'You are a meticulous research analyst for a mortgage loan officer. You MUST use web search to find real, current, accurate information. Never fabricate. Return only JSON, no markdown fences.',
     messages: [{ role:'user', content: buildResearchPrompt(agent) }],
     maxTokens: 8192,
-    tools: [{ type:'web_search_20250305', name:'web_search' }],
+    tools: [{ type:'web_search_20250305', name:'web_search', max_uses: 8 }],
     timeoutMs: 120000,
-  });
+  }, 2);
   if(res.error) return { error: res.text || 'Research failed' };
   const parsed = parseJsonLoose(res.text);
   if(!parsed) return { error: 'Could not parse research output' };
@@ -7215,7 +7250,7 @@ var _discoverExpanded = {};
 var _discoverRunId = 0;
 var DISC_SCAN_MS = 24000;
 var DISC_ENRICH_MS = 17000;
-var DISC_CONC = 3;
+var DISC_CONC = 2;
 
 function ensureDiscover(){
   if(!state.discover) state.discover = {};
@@ -7296,7 +7331,7 @@ function buildDiscoverPrompt(count){
   var tierLine = d.tierPref !== 'all' ? ('Prefer roughly Tier ' + d.tierPref + ' producers when possible.') : '';
   var hasCriteria = discCriteriaCount(d) > 0;
   var ask = Math.min(25, (count||8) + 6);
-  return 'You are helping a Loan Officer at Partners Mortgage find Real Estate Agents to build referral partnerships with. Use web search to find REAL, currently active, licensed agents. This is a first-pass scan; a later step deep-researches each one.\n\n'
+  return 'You are helping a Loan Officer at Partners Mortgage find Real Estate Agents to build referral partnerships with. Use web search to find REAL, currently active, licensed agents. Keep this higher-level \u2014 a single pass. Do not deep-dive each person; surface the best matches with a short snapshot.\n\n'
     + 'SEARCH AREA: ' + loc + '\n' + radiusLine + '\n\n'
     + 'What the LO wants to connect over:\n'
     + '- Shared interests/hobbies: ' + interests + '\n'
@@ -7369,13 +7404,13 @@ async function runDiscover(){
   }, 400);
 
   try {
-  var scanRes = await callAnthropic({
+  var scanRes = await callAnthropicRetry({
     system: 'You are a real estate relationship-research analyst. You MUST use web search to find REAL, currently active real estate agents. Never fabricate people, brokerages, or details. Return only a JSON array, no markdown fences.',
     messages: [{ role:'user', content: buildDiscoverPrompt(count) }],
-    maxTokens: 8192,
-    tools: [{ type:'web_search_20250305', name:'web_search' }],
+    maxTokens: 4000,
+    tools: [{ type:'web_search_20250305', name:'web_search', max_uses: 6 }],
     timeoutMs: 120000,
-  });
+  }, 3);
   if(scanRes.error){ finishDiscoverError(scanRes.text); return; }
   if(runId !== _discoverRunId) return;
   var arr = parseJsonLoose(scanRes.text);
@@ -7393,35 +7428,18 @@ async function runDiscover(){
     render(); toast('No matches at ' + minScore + '+ \u2014 try a lower minimum','');
     return;
   }
-  _discoverPhase='enrich'; _discoverEnrichTotal=picks.length; _discoverEnrichDone=0;
-  _discoverProgress=25; _discoverStatus='Found ' + picks.length + ' agents \u2014 starting deep research\u2026'; paintProgress();
-  await enrichPool(picks, DISC_CONC, async function(cand){
-    if(runId !== _discoverRunId) return;
-    _discoverStatus = 'Deep research: ' + (cand.name||'agent') + '\u2026'; paintProgress();
-    try {
-      var soc = cand.social || {};
-      var dr = await fetchDossier({ name:cand.name, brokerage:cand.brokerage, area:cand.area, side:cand.side, tier:cand.tier, instagram:soc.instagram, linkedin:soc.linkedin, website:soc.website });
-      if(dr && dr.dossier){ cand.dossier = dr.dossier; cand._enriched = true; }
-      else { cand._enrichErr = true; }
-    } catch(err){
-      // A single agent failing must never stall the whole run — log, mark, move on.
-      console.warn('Dossier fetch failed for ' + (cand && cand.name), err);
-      cand._enrichErr = true;
-    }
-    _discoverEnrichDone++;
-    // Math.max so the gentle creep above can never make the bar jump backward.
-    _discoverProgress = Math.max(_discoverProgress, 25 + (_discoverEnrichDone/_discoverEnrichTotal) * 72);
-    _discoverStatus = 'Researched ' + _discoverEnrichDone + ' of ' + _discoverEnrichTotal + ' agents'; paintProgress();
-  });
+  // SCAN-ONLY: deliver the matched agents immediately from the single scan call.
+  // Deep per-agent research is no longer run automatically (it was ~8 extra
+  // web-search calls per run and the bulk of the cost). The LO can run full
+  // research on demand from an agent's Research tab once added to the pipeline.
   if(_discoverTimer){ clearInterval(_discoverTimer); _discoverTimer = null; }
   if(runId !== _discoverRunId) return;
   _discoverProgress=100; paintProgress();
   _discoverRunning=false; _discoverResults=picks;
   _discoverMeta = { place: d.county?(d.county+', '+d.stateCode):d.place, radius:d.radius, count:picks.length, minScore:minScore, requested:count };
-  var enriched = picks.filter(function(p){ return p._enriched; }).length;
   render();
   notify('Discovery finished', {
-    sub: picks.length + ' agent' + (picks.length>1?'s':'') + ' found near ' + (d.county||d.place) + (enriched<picks.length?(' \u00b7 ' + enriched + ' fully researched'):''),
+    sub: picks.length + ' agent' + (picks.length>1?'s':'') + ' found near ' + (d.county||d.place),
     onClick: function(){ state.view='discover'; render(); },
   });
   } catch(err){
@@ -7486,7 +7504,7 @@ function renderDiscover(){
   if(_discoverResults){ wrap.appendChild(discoverResults()); return wrap; }
   wrap.appendChild(e('div','disc-intro',
     e('h2',null,'Discover Realtors'),
-    e('p',null,'Find agents you actually share something with. Tell the radar where to look and what you connect over \u2014 hobbies, schools, hometown, background \u2014 set how many matches and how strong, and it surfaces real agents, deep-researches each one, and hands them to you ready to add.'),
+    e('p',null,'Find agents you actually share something with. Tell the radar where to look and what you connect over \u2014 hobbies, schools, hometown, background \u2014 set how many matches and how strong, and it surfaces real agents with a snapshot and the smartest way in \u2014 ready to add.'),
   ));
   wrap.appendChild(discoverForm());
   return wrap;
@@ -7502,14 +7520,14 @@ function discoverSearching(){
   });
   field.appendChild(e('div','dsf-core'));
   page.appendChild(field);
-  page.appendChild(e('div','disc-prog-title', _discoverPhase==='scan'?'Scanning the area\u2026':'Deep-researching your matches\u2026'));
+  page.appendChild(e('div','disc-prog-title', 'Scanning the area\u2026'));
   page.appendChild(e('div',{class:'disc-prog-status', id:'disc-status'}, _discoverStatus||'Working\u2026'));
   page.appendChild(e('div','disc-prog-track', e('div',{class:'disc-prog-bar', id:'disc-bar', style:{width:_discoverProgress+'%'}})));
   page.appendChild(e('div','disc-prog-meta',
     e('span',{id:'disc-elapsed'},'Elapsed 0s'),
     e('span',{id:'disc-progresspct'}, Math.round(_discoverProgress)+'%'),
   ));
-  page.appendChild(e('div','disc-prog-hint','Each match gets a full deep-research workup before it reaches you \u2014 hobbies, recent activity, production, and the smartest way in. This can take a few minutes; you can keep working and we\u2019ll ping you when it\u2019s done.'));
+  page.appendChild(e('div','disc-prog-hint','A quick, higher-level scan for real agents you share something with \u2014 with a snapshot and the best angle in. Add the ones you like, then run full research on them on demand.'));
   page.appendChild(e('button',{class:'btn btn-ghost btn-sm', style:{marginTop:'22px'}, onclick:startOverDiscover}, 'Cancel'));
   setTimeout(paintProgress, 30);
   return page;
@@ -7576,7 +7594,7 @@ function discoverForm(){
     e('button',{ class:'btn btn-primary btn-discover', onclick:runDiscover, disabled:!hasKey?true:undefined }, e('span',{style:{marginRight:'8px'}},'\u25CE'), 'Discover agents'),
     !hasKey ? e('span','cta-note','Add an Anthropic API key in Settings \u2192 AI to enable discovery.')
       : (noCriteria ? e('span','cta-note','No interests entered yet \u2014 it\u2019ll return the most relevant active agents in the area. Add a hobby, school, or background to rank by what you share.')
-        : e('span','cta-note','Finds, then deep-researches each match \u2014 a full scan takes a couple of minutes.')),
+        : e('span','cta-note','A quick higher-level scan \u2014 usually well under a minute. Run full research per agent after you add them.')),
   ));
   return form;
 }
@@ -7608,7 +7626,7 @@ function discoverResults(){
   var grid = e('div','disc-grid');
   results.forEach(function(r){ grid.appendChild(discoverCard(r)); });
   wrap.appendChild(grid);
-  wrap.appendChild(e('div',{style:{fontSize:'11.5px',color:'var(--muted-2)',marginTop:'18px',lineHeight:'1.5'}}, 'Matches are AI-assembled from public sources and may be incomplete \u2014 confirm details before reaching out. Added agents arrive with their research already attached.'));
+  wrap.appendChild(e('div',{style:{fontSize:'11.5px',color:'var(--muted-2)',marginTop:'18px',lineHeight:'1.5'}}, 'Matches are AI-assembled from public sources and may be incomplete \u2014 confirm details before reaching out. Run full research on an agent\u2019s Research tab once you\u2019ve added them.'));
   return wrap;
 }
 function discDossierFull(dz){
