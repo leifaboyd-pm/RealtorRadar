@@ -2585,13 +2585,25 @@ function _strippedState(){
   return safe;
 }
 
+/* The localStorage cache is a per-device offline buffer. In Firebase mode it
+   MUST be scoped to the signed-in user — otherwise two LOs sharing one browser
+   (or one LO signing out and another signing in) would read each other's
+   cached pipeline, breaking the "your data is yours alone" guarantee. In local
+   mode there is only one user, so the plain key is fine. */
+function userCacheKey(){
+  if(auth.mode === 'firebase' && auth.user && auth.user.uid){
+    return STORAGE_KEY + ':' + auth.user.uid;
+  }
+  return STORAGE_KEY;
+}
+
 function save(){
   // Debounce Firestore writes (1s); localStorage writes are instant
   try {
     const safe = _strippedState();
     if(auth.mode === 'firebase' && auth.user && _fbDb){
       // Mirror to localStorage as a cache + offline buffer
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(safe)); } catch(e){}
+      try { localStorage.setItem(userCacheKey(), JSON.stringify(safe)); } catch(e){}
       clearTimeout(_saveTimer);
       _saveTimer = setTimeout(async () => {
         try {
@@ -2603,7 +2615,7 @@ function save(){
         }
       }, 1000);
     } else {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
+      localStorage.setItem(userCacheKey(), JSON.stringify(safe));
     }
   } catch(e){ console.warn('Save failed', e); toast('Storage error — try exporting your data','error'); }
 }
@@ -2622,7 +2634,7 @@ async function load(){
     } catch(e){ console.warn('Firestore load failed, using local cache', e); }
   }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(userCacheKey());
     if(!raw) return false;
     const data = JSON.parse(raw);
     state = { ...state, ...data };
@@ -2691,7 +2703,8 @@ function importDB(file){
 function clearDB(){
   if(!confirm('Permanently delete all Realtor Radar data' + (auth.mode==='firebase'?' (both cloud and local)':'') + '? Cannot be undone.')) return;
   if(!confirm('Really sure? This wipes every agent, message, note, and setting.')) return;
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(userCacheKey());
+  try { localStorage.removeItem(STORAGE_KEY); } catch(e){}  // also clear legacy shared key
   state = {
     view:'pipeline', activeAgentId:null, activeTab:'overview',
     filterTier:'all', filterStage:'all', filterSide:'all', search:'',
@@ -2708,9 +2721,9 @@ function clearDB(){
 /* ========== API KEY ========== */
 /* Resolution order: per-user override → embedded shared Partners key */
 function getApiKey(){
-  const userKey = localStorage.getItem(API_KEY_STORAGE);
+  const userKey = (localStorage.getItem(API_KEY_STORAGE) || '').trim();
   if(userKey) return userKey;
-  return PARTNERS_API_KEY || '';
+  return (PARTNERS_API_KEY || '').trim();
 }
 function getUserApiKey(){ return localStorage.getItem(API_KEY_STORAGE) || ''; }
 function setApiKey(k){
@@ -2721,11 +2734,13 @@ function hasApiKey(){ return !!getApiKey(); }
 function isUsingSharedKey(){ return !getUserApiKey() && !!PARTNERS_API_KEY; }
 
 /* ========== AI LAYER ========== */
-async function callAnthropic({ system, messages, maxTokens=2500, tools=null }){
+async function callAnthropic({ system, messages, maxTokens=2500, tools=null, timeoutMs=90000 }){
   const key = getApiKey();
   if(!key){
     return { error:'no_key', text:'Add your Anthropic API key in Settings → AI to enable live AI features.' };
   }
+  const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
   try {
     const body = {
       model: 'claude-sonnet-4-6',
@@ -2743,11 +2758,19 @@ async function callAnthropic({ system, messages, maxTokens=2500, tools=null }){
         'anthropic-dangerous-direct-browser-access':'true',
       },
       body: JSON.stringify(body),
+      ...(controller ? { signal: controller.signal } : {}),
     });
     if(!resp.ok){
       const errText = await resp.text();
       let errJson; try { errJson = JSON.parse(errText); } catch(e){}
       const msg = errJson?.error?.message || errText || `HTTP ${resp.status}`;
+      // Turn authentication failures into a clear, actionable message.
+      if(resp.status === 401 || resp.status === 403 || /x-api-key|authentication|invalid.*key|api key/i.test(msg)){
+        return { error:'auth', text:'Your Anthropic API key is missing, invalid, or expired. Open Settings → AI and paste a current key (it starts with “sk-ant-”). If you opened this file directly instead of the live site, the key you saved online isn’t available here.' };
+      }
+      if(resp.status === 429){
+        return { error:'rate', text:'The Anthropic API is rate-limited or out of credit right now. Wait a moment and try again, or check your usage at console.anthropic.com.' };
+      }
       return { error:'api', text: msg };
     }
     const data = await resp.json();
@@ -2757,7 +2780,12 @@ async function callAnthropic({ system, messages, maxTokens=2500, tools=null }){
       .join('\n');
     return { text, raw:data };
   } catch(e){
+    if(e && e.name === 'AbortError'){
+      return { error:'timeout', text:'This request took too long and was stopped. The AI service may be slow or rate-limited right now — please try again.' };
+    }
     return { error:'network', text: e.message || 'Network error calling Claude' };
+  } finally {
+    if(timer) clearTimeout(timer);
   }
 }
 
@@ -3224,6 +3252,30 @@ function e(tag, props, ...children){
   }
   return el;
 }
+
+/* ---- Defense-in-depth: null-safe DOM insertion ------------------------------
+   e() already skips null/false children, but there are 400+ DIRECT .appendChild()
+   calls across the app. Any one of them crashes the ENTIRE view if a builder
+   returns null in some branch — which is exactly how a dismissed insight card
+   took down the Nudges tab. Rather than guard every call site (and hope all
+   future code remembers to), we make appendChild/insertBefore tolerant of
+   null/undefined/false everywhere. A missing node degrades gracefully — the item
+   simply doesn't appear — instead of killing the tab. Real type errors (objects,
+   numbers) still throw, so genuine mistakes stay visible and aren't masked. */
+(function hardenDomInsertion(){
+  if(window.__rrDomHardened) return;
+  window.__rrDomHardened = true;
+  var _append = Node.prototype.appendChild;
+  Node.prototype.appendChild = function(node){
+    if(node === null || node === undefined || node === false) return node;
+    return _append.call(this, node);
+  };
+  var _insertBefore = Node.prototype.insertBefore;
+  Node.prototype.insertBefore = function(node, ref){
+    if(node === null || node === undefined || node === false) return node;
+    return _insertBefore.call(this, node, ref);
+  };
+})();
 
 /* Channel icons (subtle inline) */
 const CH_ICON = {
@@ -4642,7 +4694,7 @@ function renderTabMessages(a){
   // Monday warning
   const day = new Date().getDay();
   if(day === 1 && a._draft.channel === 'call'){
-    controls.appendChild(insightCard('monday_calls',{inline:true, dismissible:false}));
+    const _icMon = insightCard('monday_calls',{inline:true, dismissible:false}); if(_icMon) controls.appendChild(_icMon);
   }
 
   controls.appendChild(e('button',{class:'btn btn-primary', style:{marginTop:'8px'}, onclick:()=>generateMessage(a.id)}, 'Generate variants'));
@@ -4788,7 +4840,7 @@ function renderTabDeliverables(a){
   // RESPA insight if any careful items selected
   const carefulSelected = (a.selectedValues || []).some(id => state.valueMenu.find(v=>v.id===id)?.respa === 'careful');
   if(carefulSelected){
-    wrap.appendChild(insightCard('respa_warning', { inline:true, dismissible:false }));
+    const _icRespa = insightCard('respa_warning', { inline:true, dismissible:false }); if(_icRespa) wrap.appendChild(_icRespa);
   }
 
   // Three deliverable tiles
@@ -5911,7 +5963,7 @@ function renderNudges(){
     ),
   ));
 
-  page.appendChild(insightCard('lead_with_value'));
+  const _icNudge = insightCard('lead_with_value'); if(_icNudge) page.appendChild(_icNudge);
 
   const grid = e('div','nudge-grid');
   NUDGES.forEach(n => {
@@ -6300,11 +6352,11 @@ function renderSetValues(){
   const list = e('div',{style:{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'14px'}});
   state.valueMenu.forEach((v, i) => {
     list.appendChild(e('div',{style:{padding:'14px 16px',background:'var(--paper)',border:'1px solid var(--rule)',borderRadius:'10px'}},
-      e('div','field',{style:{marginBottom:'10px'}},
+      e('div',{class:'field',style:{marginBottom:'10px'}},
         e('label',null,'Service name'),
         e('input',{class:'fi', value: v.name, oninput: ev => { state.valueMenu[i].name = ev.target.value; save(); }}),
       ),
-      e('div','field',{style:{marginBottom:'10px'}},
+      e('div',{class:'field',style:{marginBottom:'10px'}},
         e('label',null,'Description'),
         e('input',{class:'fi', value: v.desc, oninput: ev => { state.valueMenu[i].desc = ev.target.value; save(); }}),
       ),
@@ -7137,6 +7189,7 @@ async function fetchDossier(agent, opts){
     messages: [{ role:'user', content: buildResearchPrompt(agent) }],
     maxTokens: 8192,
     tools: [{ type:'web_search_20250305', name:'web_search' }],
+    timeoutMs: 120000,
   });
   if(res.error) return { error: res.text || 'Research failed' };
   const parsed = parseJsonLoose(res.text);
@@ -7302,13 +7355,26 @@ async function runDiscover(){
   _discoverEtaMs = DISC_SCAN_MS + Math.ceil(count/DISC_CONC) * DISC_ENRICH_MS;
   render();
   if(_discoverTimer) clearInterval(_discoverTimer);
-  _discoverTimer = setInterval(function(){ if(_discoverPhase==='scan'){ _discoverProgress = Math.min(23, _discoverProgress + 0.35); } paintProgress(); }, 400);
+  _discoverTimer = setInterval(function(){
+    if(_discoverPhase==='scan'){
+      _discoverProgress = Math.min(23, _discoverProgress + 0.35);
+    } else if(_discoverPhase==='enrich' && _discoverEnrichTotal > 0){
+      // Gentle creep within the current agent's research window so the bar
+      // always moves, capped just below the next real completion milestone.
+      var seg = 72 / _discoverEnrichTotal;
+      var ceil = Math.min(96, 25 + (_discoverEnrichDone + 0.9) * seg);
+      if(_discoverProgress < ceil) _discoverProgress = Math.min(ceil, _discoverProgress + seg * 0.02);
+    }
+    paintProgress();
+  }, 400);
 
+  try {
   var scanRes = await callAnthropic({
     system: 'You are a real estate relationship-research analyst. You MUST use web search to find REAL, currently active real estate agents. Never fabricate people, brokerages, or details. Return only a JSON array, no markdown fences.',
     messages: [{ role:'user', content: buildDiscoverPrompt(count) }],
     maxTokens: 8192,
     tools: [{ type:'web_search_20250305', name:'web_search' }],
+    timeoutMs: 120000,
   });
   if(scanRes.error){ finishDiscoverError(scanRes.text); return; }
   if(runId !== _discoverRunId) return;
@@ -7332,12 +7398,19 @@ async function runDiscover(){
   await enrichPool(picks, DISC_CONC, async function(cand){
     if(runId !== _discoverRunId) return;
     _discoverStatus = 'Deep research: ' + (cand.name||'agent') + '\u2026'; paintProgress();
-    var soc = cand.social || {};
-    var dr = await fetchDossier({ name:cand.name, brokerage:cand.brokerage, area:cand.area, side:cand.side, tier:cand.tier, instagram:soc.instagram, linkedin:soc.linkedin, website:soc.website });
-    if(dr.dossier){ cand.dossier = dr.dossier; cand._enriched = true; }
-    else { cand._enrichErr = true; }
+    try {
+      var soc = cand.social || {};
+      var dr = await fetchDossier({ name:cand.name, brokerage:cand.brokerage, area:cand.area, side:cand.side, tier:cand.tier, instagram:soc.instagram, linkedin:soc.linkedin, website:soc.website });
+      if(dr && dr.dossier){ cand.dossier = dr.dossier; cand._enriched = true; }
+      else { cand._enrichErr = true; }
+    } catch(err){
+      // A single agent failing must never stall the whole run — log, mark, move on.
+      console.warn('Dossier fetch failed for ' + (cand && cand.name), err);
+      cand._enrichErr = true;
+    }
     _discoverEnrichDone++;
-    _discoverProgress = 25 + (_discoverEnrichDone/_discoverEnrichTotal) * 72;
+    // Math.max so the gentle creep above can never make the bar jump backward.
+    _discoverProgress = Math.max(_discoverProgress, 25 + (_discoverEnrichDone/_discoverEnrichTotal) * 72);
     _discoverStatus = 'Researched ' + _discoverEnrichDone + ' of ' + _discoverEnrichTotal + ' agents'; paintProgress();
   });
   if(_discoverTimer){ clearInterval(_discoverTimer); _discoverTimer = null; }
@@ -7351,6 +7424,13 @@ async function runDiscover(){
     sub: picks.length + ' agent' + (picks.length>1?'s':'') + ' found near ' + (d.county||d.place) + (enriched<picks.length?(' \u00b7 ' + enriched + ' fully researched'):''),
     onClick: function(){ state.view='discover'; render(); },
   });
+  } catch(err){
+    // Last-resort guard: anything unexpected still clears the spinner and the
+    // timer (via finishDiscoverError) instead of leaving Discover frozen.
+    console.error('Discover run failed', err);
+    if(runId === _discoverRunId) finishDiscoverError('Search hit an unexpected error \u2014 please try again.');
+    else if(_discoverTimer){ clearInterval(_discoverTimer); _discoverTimer = null; }
+  }
 }
 function sortDiscover(arr){
   var by = (state.discover && state.discover.sortBy) || 'match';
@@ -7620,9 +7700,57 @@ function renderViewContent(){
   }
 }
 
+/* Coerce persisted state into a safe shape before every render. State saved by
+   an older build (or a partial/interrupted save) can be missing arrays, have a
+   null voice/valueMenu, or carry invalid dates — any of which would throw inside
+   a view renderer and make that tab look "dead." Normalizing here makes the app
+   resilient to schema drift regardless of where the data came from. */
+function normalizeState(){
+  if(!state || typeof state !== 'object') return;
+  var todayISO = new Date().toISOString();
+  var todayYMD = todayISO.slice(0,10);
+  if(!Array.isArray(state.agents)) state.agents = [];
+  state.agents.forEach(function(a){
+    if(!a || typeof a !== 'object') return;
+    if(!Array.isArray(a.completedSteps)) a.completedSteps = [];
+    if(!Array.isArray(a.activity)) a.activity = [];
+    if(!Array.isArray(a.messages)) a.messages = [];
+    if(!Array.isArray(a.selectedValues)) a.selectedValues = [];
+    if(!a.deliverables || typeof a.deliverables !== 'object') a.deliverables = { plan:null, menu:null, deck:null };
+    if(a.dossier === undefined) a.dossier = null;
+    if(!a.stage) a.stage = 'identified';
+    if(!a.cadence) a.cadence = 'cold_solo';
+    if(!a.side) a.side = 'buyer';
+    if(!a.tier) a.tier = 'C';
+    if(isNaN(new Date(a.createdAt).getTime())) a.createdAt = todayISO;
+    if(isNaN(new Date(a.cadenceStartedAt).getTime())) a.cadenceStartedAt = todayYMD;
+  });
+  if(!Array.isArray(state.valueMenu)) state.valueMenu = DEFAULT_VALUE_MENU.slice();
+  if(!Array.isArray(state.brandFacts)) state.brandFacts = DEFAULT_BRAND_FACTS.slice();
+  if(!Array.isArray(state.dismissedInsights)) state.dismissedInsights = [];
+  if(!state.voice || typeof state.voice !== 'object') state.voice = { description:'', examples:[] };
+  if(typeof state.voice.description !== 'string') state.voice.description = '';
+  if(!Array.isArray(state.voice.examples)) state.voice.examples = [];
+  if(!state.loSettings || typeof state.loSettings !== 'object') state.loSettings = { name:'', nmls:'', branch:'', email:'', phone:'', slaPreQual:'24 hours', slaClose:'28 days' };
+  if(!state.customCadences || typeof state.customCadences !== 'object') state.customCadences = {};
+}
+
+/* Non-fatal fallback when a single view throws: show the cause on-screen and
+   keep every other tab working, instead of silently killing navigation. */
+function renderViewError(view, err){
+  return e('div','main-inner',
+    e('div',{style:{maxWidth:'620px',margin:'60px auto',padding:'34px',background:'var(--paper)',border:'1px solid var(--gold)',borderRadius:'16px',textAlign:'center',boxShadow:'var(--shadow)'}},
+      e('div',{style:{fontFamily:'var(--cond)',fontSize:'11px',letterSpacing:'1.6px',textTransform:'uppercase',color:'var(--gold-2)',fontWeight:'700',marginBottom:'10px'}}, 'This view hit a snag'),
+      e('div',{style:{fontFamily:'var(--serif)',fontSize:'24px',color:'var(--navy)',marginBottom:'12px'}}, 'We couldn\u2019t open ', e('em',null, String(view||'this tab'))),
+      e('div',{style:{fontSize:'14px',color:'var(--ink-2)',lineHeight:'1.6',marginBottom:'18px'}}, 'Your data is safe and your other tabs still work. This usually means a record saved by an older version. Send Aidan the line below and he\u2019ll sort it.'),
+      e('div',{style:{fontSize:'12px',color:'var(--muted)',fontFamily:'ui-monospace,monospace',background:'var(--cream)',padding:'12px 14px',borderRadius:'8px',wordBreak:'break-word',textAlign:'left'}}, String((err && (err.message || err.toString())) || 'Unknown error')),
+    ),
+  );
+}
+
 function render(){
   const root = document.getElementById('app');
-  if(!state.customCadences) state.customCadences = {};
+  normalizeState();
 
   // Full-screen takeovers replace everything and reset the shell
   if(auth.mode === 'firebase' && !auth.user){ root.innerHTML=''; _shell=null; _lastViewKey=null; root.appendChild(renderAuthGate()); return; }
@@ -7651,7 +7779,13 @@ function render(){
     updateTopbar(_shell.topbar);
   }
 
-  const content = renderViewContent();
+  let content;
+  try {
+    content = renderViewContent();
+  } catch(err){
+    console.error('View render failed for "' + state.view + '":', err);
+    content = renderViewError(state.view, err);
+  }
   const key = state.view + '|' + (state.activeAgentId || '') + '|' + (state.view === 'agent' ? (state.activeTab || '') : '');
   const animate = key !== _lastViewKey;
   if(animate) content.classList.add('view-enter');
