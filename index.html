@@ -1755,7 +1755,7 @@ const ALLOWED_EMAIL_DOMAIN = '@partnersmortgage.com';
    When populated, all LOs use this key transparently — no per-user setup required.
    Individual LOs can still override with their own key in Settings → AI (Advanced).
    If costs become prohibitive, clear this constant and the app will require per-user keys. */
-const PARTNERS_API_KEY = '';  // e.g. 'sk-ant-api03-...'
+const PARTNERS_API_KEY = '';  // legacy direct-mode key; leave empty when WORKER_URL is set
 
 /* Cloudflare Worker gateway. When set, ALL AI calls route through it and the
    API key lives server-side in the Worker — nothing in the browser, shared by
@@ -1765,7 +1765,7 @@ const PARTNERS_API_KEY = '';  // e.g. 'sk-ant-api03-...'
    Standard pass-through Workers mirror Anthropic's own path (/v1/messages). If
    Aidan's Worker uses a different route (e.g. /anthropic/v1/messages), change
    ONLY this line to match. */
-const WORKER_URL = 'https://pm-gateway.partnersmortgage88.workers.dev/v1/messages';
+const WORKER_URL = 'https://pm-gateway.partnersmortgage88.workers.dev/anthropic';
 
 /* The model used for ALL AI calls. Haiku is the low-cost option; switch to
    'claude-sonnet-4-6' here (one line) if you want higher-quality research. */
@@ -2767,8 +2767,11 @@ async function callAnthropic({ system, messages, maxTokens=2500, tools=null, tim
       ...(tools ? { tools } : {}),
     };
     const endpoint = useWorker ? WORKER_URL : 'https://api.anthropic.com/v1/messages';
-    const headers = { 'content-type':'application/json', 'anthropic-version':'2023-06-01' };
+    // Through the Worker, send ONLY content-type — it adds the API key and
+    // anthropic-version server-side. Direct (legacy) mode sends the full set.
+    const headers = { 'content-type':'application/json' };
     if(!useWorker){
+      headers['anthropic-version'] = '2023-06-01';
       headers['x-api-key'] = key;
       headers['anthropic-dangerous-direct-browser-access'] = 'true';
     }
