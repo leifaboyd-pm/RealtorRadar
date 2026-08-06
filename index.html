@@ -11,7 +11,7 @@
 <!-- Realtor Radar favicon — concentric teal rings + gold core + blips -->
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="none" stroke="%2300818D" stroke-width="3.5"/><circle cx="50" cy="50" r="32" fill="none" stroke="%2300818D" stroke-width="1.5" opacity="0.55"/><circle cx="50" cy="50" r="18" fill="none" stroke="%23FFAC27" stroke-width="1.5" opacity="0.65"/><line x1="50" y1="8" x2="50" y2="92" stroke="%2300818D" stroke-width="0.8" opacity="0.22"/><line x1="8" y1="50" x2="92" y2="50" stroke="%2300818D" stroke-width="0.8" opacity="0.22"/><circle cx="50" cy="50" r="5.5" fill="%23FFAC27"/><circle cx="69" cy="27" r="4" fill="%23FFAC27"/><circle cx="29" cy="65" r="3.5" fill="%23FFAC27"/><circle cx="22" cy="38" r="3" fill="%23FFAC27"/></svg>'>
 
-<link rel="apple-touch-icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><rect width="180" height="180" rx="36" fill="%230a2230"/><g transform="translate(20 20)"><circle cx="70" cy="70" r="65" fill="none" stroke="%2300818D" stroke-width="5"/><circle cx="70" cy="70" r="46" fill="none" stroke="%2300818D" stroke-width="2" opacity="0.5"/><circle cx="70" cy="70" r="26" fill="none" stroke="%23FFAC27" stroke-width="2" opacity="0.65"/><line x1="70" y1="10" x2="70" y2="130" stroke="%2300818D" stroke-width="1" opacity="0.22"/><line x1="10" y1="70" x2="130" y2="70" stroke="%2300818D" stroke-width="1" opacity="0.22"/><circle cx="70" cy="70" r="8" fill="%23FFAC27"/><circle cx="97" cy="38" r="5.5" fill="%23FFAC27"/><circle cx="42" cy="92" r="5" fill="%23FFAC27"/><circle cx="31" cy="55" r="4" fill="%23FFAC27"/></g></svg>'>
+<link rel="apple-touch-icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180"><rect width="180" height="180" rx="36" fill="%23f7f3ed"/><g transform="translate(20 20)"><circle cx="70" cy="70" r="65" fill="none" stroke="%2300818D" stroke-width="5"/><circle cx="70" cy="70" r="46" fill="none" stroke="%2300818D" stroke-width="2" opacity="0.5"/><circle cx="70" cy="70" r="26" fill="none" stroke="%23FFAC27" stroke-width="2" opacity="0.65"/><line x1="70" y1="10" x2="70" y2="130" stroke="%2300818D" stroke-width="1" opacity="0.22"/><line x1="10" y1="70" x2="130" y2="70" stroke="%2300818D" stroke-width="1" opacity="0.22"/><circle cx="70" cy="70" r="8" fill="%23FFAC27"/><circle cx="97" cy="38" r="5.5" fill="%23FFAC27"/><circle cx="42" cy="92" r="5" fill="%23FFAC27"/><circle cx="31" cy="55" r="4" fill="%23FFAC27"/></g></svg>'>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,9 +20,9 @@
 <!-- Firebase SDK v10 (modular) — loaded as ESM, exposed to window.RR_FB -->
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js';
-  import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
+  import { getAuth, sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
   import { getFirestore, doc, getDoc, setDoc, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js';
-  window.RR_FB = { initializeApp, getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged, getFirestore, doc, getDoc, setDoc, onSnapshot, serverTimestamp };
+  window.RR_FB = { initializeApp, getAuth, sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink, signOut, onAuthStateChanged, getFirestore, doc, getDoc, setDoc, onSnapshot, serverTimestamp };
   window.dispatchEvent(new Event('rr-fb-ready'));
 </script>
 
@@ -1740,13 +1740,6 @@ const FIREBASE_CONFIG = {
   appId:             '1:672039364518:web:c826573990af277eef1167',
 };
 
-/* Canonical hosted URL of this app. Used as the email-link sign-in return
-   address whenever the app is opened somewhere Firebase can't use as a continue
-   URL (e.g. a local file:// open, or a null origin). Firebase email-link
-   sign-in REQUIRES an http(s) return URL whose domain is in the Firebase
-   console's Authorized domains list. Keep this pointed at the live deployment. */
-const APP_URL = 'https://leifaboyd-pm.github.io/RealtorRadar/';
-
 /* Domain restriction — only users with emails ending in this string can sign in.
    Set to '' to allow any domain (not recommended in production). */
 const ALLOWED_EMAIL_DOMAIN = '@partnersmortgage.com';
@@ -1755,26 +1748,13 @@ const ALLOWED_EMAIL_DOMAIN = '@partnersmortgage.com';
    When populated, all LOs use this key transparently — no per-user setup required.
    Individual LOs can still override with their own key in Settings → AI (Advanced).
    If costs become prohibitive, clear this constant and the app will require per-user keys. */
-const PARTNERS_API_KEY = '';  // legacy direct-mode key; leave empty when WORKER_URL is set
-
-/* Cloudflare Worker gateway. When set, ALL AI calls route through it and the
-   API key lives server-side in the Worker — nothing in the browser, shared by
-   every user, no per-LO key setup. Leave '' to call the Anthropic API directly
-   with a per-user key (legacy mode).
-   NOTE: this must be the full endpoint the Worker forwards to Anthropic from.
-   Standard pass-through Workers mirror Anthropic's own path (/v1/messages). If
-   Aidan's Worker uses a different route (e.g. /anthropic/v1/messages), change
-   ONLY this line to match. */
-const WORKER_URL = 'https://pm-gateway.partnersmortgage88.workers.dev/anthropic';
-
-/* The model used for ALL AI calls. Haiku is the low-cost option; switch to
-   'claude-sonnet-4-6' here (one line) if you want higher-quality research. */
-const AI_MODEL = 'claude-haiku-4-5-20251001';
+/* Anthropic requests are proxied through the pm-gateway Cloudflare Worker,
+   which holds the API key server-side. No Anthropic key lives in this file. */
 
 /* Email used as admin — only this user can edit the central templates document.
    Templates contain shared cadences, value menu defaults, brand facts, etc.
    When populated and matching the signed-in user, a "Publish templates" button appears in Settings. */
-const TEMPLATES_ADMIN_EMAIL = 'lboyd@partnersmortgage.com';
+const TEMPLATES_ADMIN_EMAIL = 'leif@partnersmortgage.com';
 
 const FIREBASE_ENABLED = !!FIREBASE_CONFIG.apiKey;
 
@@ -2537,41 +2517,35 @@ function isAdmin(){
   return auth.user && TEMPLATES_ADMIN_EMAIL && auth.user.email === TEMPLATES_ADMIN_EMAIL;
 }
 
-function friendlyAuthError(e){
-  var code = (e && e.code) || '';
-  var msg = (e && e.message) || 'unknown error';
-  if(code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found'){
-    return 'Email or password is incorrect. Check both and try again — or use “Forgot password?”';
-  }
-  if(code === 'auth/email-already-in-use'){
-    return 'An account already exists for that email. Switch to “Sign in” instead.';
-  }
-  if(code === 'auth/weak-password'){
-    return 'Password is too short — use at least 6 characters.';
-  }
-  if(code === 'auth/operation-not-allowed'){
-    return 'Email/password sign-in isn’t turned on yet. An admin needs to enable it in Firebase (Authentication → Sign-in method → Email/Password).';
-  }
-  if(code === 'auth/invalid-email'){ return 'That email doesn’t look right — check the spelling and try again.'; }
-  if(code === 'auth/user-disabled'){ return 'This account has been disabled. Contact your admin.'; }
-  if(code === 'auth/too-many-requests'){ return 'Too many attempts just now. Wait a minute, then try again.'; }
-  if(code === 'auth/network-request-failed'){ return 'Network problem reaching the sign-in service. Check your connection and try again.'; }
-  return 'Something went wrong: ' + msg;
+async function fbSendMagicLink(email){
+  if(!fbInit()) throw new Error('Firebase not configured');
+  const actionCodeSettings = {
+    url: window.location.origin + window.location.pathname,
+    handleCodeInApp: true,
+  };
+  await window.RR_FB.sendSignInLinkToEmail(_fbAuth, email, actionCodeSettings);
+  localStorage.setItem(PENDING_EMAIL_KEY, email);
 }
 
-async function fbSignIn(email, password){
-  if(!fbInit()) throw new Error('Firebase not configured');
-  await window.RR_FB.signInWithEmailAndPassword(_fbAuth, email, password);
-}
-
-async function fbSignUp(email, password){
-  if(!fbInit()) throw new Error('Firebase not configured');
-  await window.RR_FB.createUserWithEmailAndPassword(_fbAuth, email, password);
-}
-
-async function fbResetPassword(email){
-  if(!fbInit()) throw new Error('Firebase not configured');
-  await window.RR_FB.sendPasswordResetEmail(_fbAuth, email);
+async function fbCompleteSignIn(){
+  if(!fbInit()) return false;
+  if(!window.RR_FB.isSignInWithEmailLink(_fbAuth, window.location.href)) return false;
+  let email = localStorage.getItem(PENDING_EMAIL_KEY);
+  if(!email){
+    email = window.prompt('Confirm your email to finish signing in:') || '';
+  }
+  if(!email) return false;
+  try {
+    await window.RR_FB.signInWithEmailLink(_fbAuth, email, window.location.href);
+    localStorage.removeItem(PENDING_EMAIL_KEY);
+    // Clear the email link params from the URL
+    window.history.replaceState({}, document.title, window.location.pathname);
+    return true;
+  } catch(e){
+    console.error('Sign-in failed:', e);
+    toast('Sign-in failed: ' + (e.message || 'unknown error'), 'error');
+    return false;
+  }
 }
 
 async function fbSignOut(){
@@ -2599,25 +2573,13 @@ function _strippedState(){
   return safe;
 }
 
-/* The localStorage cache is a per-device offline buffer. In Firebase mode it
-   MUST be scoped to the signed-in user — otherwise two LOs sharing one browser
-   (or one LO signing out and another signing in) would read each other's
-   cached pipeline, breaking the "your data is yours alone" guarantee. In local
-   mode there is only one user, so the plain key is fine. */
-function userCacheKey(){
-  if(auth.mode === 'firebase' && auth.user && auth.user.uid){
-    return STORAGE_KEY + ':' + auth.user.uid;
-  }
-  return STORAGE_KEY;
-}
-
 function save(){
   // Debounce Firestore writes (1s); localStorage writes are instant
   try {
     const safe = _strippedState();
     if(auth.mode === 'firebase' && auth.user && _fbDb){
       // Mirror to localStorage as a cache + offline buffer
-      try { localStorage.setItem(userCacheKey(), JSON.stringify(safe)); } catch(e){}
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(safe)); } catch(e){}
       clearTimeout(_saveTimer);
       _saveTimer = setTimeout(async () => {
         try {
@@ -2629,7 +2591,7 @@ function save(){
         }
       }, 1000);
     } else {
-      localStorage.setItem(userCacheKey(), JSON.stringify(safe));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
     }
   } catch(e){ console.warn('Save failed', e); toast('Storage error — try exporting your data','error'); }
 }
@@ -2648,7 +2610,7 @@ async function load(){
     } catch(e){ console.warn('Firestore load failed, using local cache', e); }
   }
   try {
-    const raw = localStorage.getItem(userCacheKey());
+    const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return false;
     const data = JSON.parse(raw);
     state = { ...state, ...data };
@@ -2717,8 +2679,7 @@ function importDB(file){
 function clearDB(){
   if(!confirm('Permanently delete all Realtor Radar data' + (auth.mode==='firebase'?' (both cloud and local)':'') + '? Cannot be undone.')) return;
   if(!confirm('Really sure? This wipes every agent, message, note, and setting.')) return;
-  localStorage.removeItem(userCacheKey());
-  try { localStorage.removeItem(STORAGE_KEY); } catch(e){}  // also clear legacy shared key
+  localStorage.removeItem(STORAGE_KEY);
   state = {
     view:'pipeline', activeAgentId:null, activeTab:'overview',
     filterTier:'all', filterStage:'all', filterSide:'all', search:'',
@@ -2735,63 +2696,37 @@ function clearDB(){
 /* ========== API KEY ========== */
 /* Resolution order: per-user override → embedded shared Partners key */
 function getApiKey(){
-  const userKey = (localStorage.getItem(API_KEY_STORAGE) || '').trim();
-  if(userKey) return userKey;
-  return (PARTNERS_API_KEY || '').trim();
+  return localStorage.getItem(API_KEY_STORAGE) || '';
 }
 function getUserApiKey(){ return localStorage.getItem(API_KEY_STORAGE) || ''; }
 function setApiKey(k){
   if(k) localStorage.setItem(API_KEY_STORAGE, k);
   else localStorage.removeItem(API_KEY_STORAGE);
 }
-function hasApiKey(){ return !!WORKER_URL || !!getApiKey(); }
-function isUsingSharedKey(){ return !getUserApiKey() && !!PARTNERS_API_KEY; }
+function hasApiKey(){ return true; }
+function isUsingSharedKey(){ return true; }
 
 /* ========== AI LAYER ========== */
-async function callAnthropic({ system, messages, maxTokens=2500, tools=null, timeoutMs=90000, model=null }){
-  const useWorker = !!WORKER_URL;
-  const key = getApiKey();
-  // Only require a per-user key in legacy (direct) mode. Through the Worker the
-  // key is server-side, so no client key is needed.
-  if(!useWorker && !key){
-    return { error:'no_key', text:'Add your Anthropic API key in Settings → AI to enable live AI features.' };
-  }
-  const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  const timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
+async function callAnthropic({ system, messages, maxTokens=2500, tools=null }){
   try {
     const body = {
-      model: model || AI_MODEL,
+      model: 'claude-sonnet-5',
       max_tokens: maxTokens,
       ...(system ? { system } : {}),
       messages,
       ...(tools ? { tools } : {}),
     };
-    const endpoint = useWorker ? WORKER_URL : 'https://api.anthropic.com/v1/messages';
-    // Through the Worker, send ONLY content-type — it adds the API key and
-    // anthropic-version server-side. Direct (legacy) mode sends the full set.
-    const headers = { 'content-type':'application/json' };
-    if(!useWorker){
-      headers['anthropic-version'] = '2023-06-01';
-      headers['x-api-key'] = key;
-      headers['anthropic-dangerous-direct-browser-access'] = 'true';
-    }
-    const resp = await fetch(endpoint, {
+    const resp = await fetch('https://pm-gateway.partnersmortgage88.workers.dev/anthropic', {
       method:'POST',
-      headers: headers,
+      headers:{
+        'Content-Type':'application/json',
+      },
       body: JSON.stringify(body),
-      ...(controller ? { signal: controller.signal } : {}),
     });
     if(!resp.ok){
       const errText = await resp.text();
       let errJson; try { errJson = JSON.parse(errText); } catch(e){}
       const msg = errJson?.error?.message || errText || `HTTP ${resp.status}`;
-      // Turn authentication failures into a clear, actionable message.
-      if(resp.status === 401 || resp.status === 403 || /x-api-key|authentication|invalid.*key|api key/i.test(msg)){
-        return { error:'auth', text:'Your Anthropic API key is missing, invalid, or expired. Open Settings → AI and paste a current key (it starts with “sk-ant-”). If you opened this file directly instead of the live site, the key you saved online isn’t available here.' };
-      }
-      if(resp.status === 429){
-        return { error:'rate', text:'The Anthropic API is rate-limited or out of credit right now. Wait a moment and try again, or check your usage at console.anthropic.com.' };
-      }
       return { error:'api', text: msg };
     }
     const data = await resp.json();
@@ -2801,30 +2736,8 @@ async function callAnthropic({ system, messages, maxTokens=2500, tools=null, tim
       .join('\n');
     return { text, raw:data };
   } catch(e){
-    if(e && e.name === 'AbortError'){
-      return { error:'timeout', text:'This request took too long and was stopped. The AI service may be slow or rate-limited right now — please try again.' };
-    }
     return { error:'network', text: e.message || 'Network error calling Claude' };
-  } finally {
-    if(timer) clearTimeout(timer);
   }
-}
-
-/* Retry only TRANSIENT failures (rate limits, network blips) with backoff.
-   Does not retry timeouts (already waited the full budget), auth errors, or
-   missing-key errors — retrying those just wastes time. */
-async function callAnthropicRetry(opts, attempts){
-  attempts = attempts || 2;
-  var last;
-  for(var n = 0; n < attempts; n++){
-    last = await callAnthropic(opts);
-    if(!last.error) return last;
-    if(last.error !== 'rate' && last.error !== 'network') return last;
-    if(n < attempts - 1){
-      await new Promise(function(r){ setTimeout(r, 1500 * Math.pow(2, n)); }); // 1.5s, 3s, …
-    }
-  }
-  return last;
 }
 
 function parseJsonLoose(text){
@@ -3290,30 +3203,6 @@ function e(tag, props, ...children){
   }
   return el;
 }
-
-/* ---- Defense-in-depth: null-safe DOM insertion ------------------------------
-   e() already skips null/false children, but there are 400+ DIRECT .appendChild()
-   calls across the app. Any one of them crashes the ENTIRE view if a builder
-   returns null in some branch — which is exactly how a dismissed insight card
-   took down the Nudges tab. Rather than guard every call site (and hope all
-   future code remembers to), we make appendChild/insertBefore tolerant of
-   null/undefined/false everywhere. A missing node degrades gracefully — the item
-   simply doesn't appear — instead of killing the tab. Real type errors (objects,
-   numbers) still throw, so genuine mistakes stay visible and aren't masked. */
-(function hardenDomInsertion(){
-  if(window.__rrDomHardened) return;
-  window.__rrDomHardened = true;
-  var _append = Node.prototype.appendChild;
-  Node.prototype.appendChild = function(node){
-    if(node === null || node === undefined || node === false) return node;
-    return _append.call(this, node);
-  };
-  var _insertBefore = Node.prototype.insertBefore;
-  Node.prototype.insertBefore = function(node, ref){
-    if(node === null || node === undefined || node === false) return node;
-    return _insertBefore.call(this, node, ref);
-  };
-})();
 
 /* Channel icons (subtle inline) */
 const CH_ICON = {
@@ -4732,7 +4621,7 @@ function renderTabMessages(a){
   // Monday warning
   const day = new Date().getDay();
   if(day === 1 && a._draft.channel === 'call'){
-    const _icMon = insightCard('monday_calls',{inline:true, dismissible:false}); if(_icMon) controls.appendChild(_icMon);
+    controls.appendChild(insightCard('monday_calls',{inline:true, dismissible:false}));
   }
 
   controls.appendChild(e('button',{class:'btn btn-primary', style:{marginTop:'8px'}, onclick:()=>generateMessage(a.id)}, 'Generate variants'));
@@ -4878,7 +4767,7 @@ function renderTabDeliverables(a){
   // RESPA insight if any careful items selected
   const carefulSelected = (a.selectedValues || []).some(id => state.valueMenu.find(v=>v.id===id)?.respa === 'careful');
   if(carefulSelected){
-    const _icRespa = insightCard('respa_warning', { inline:true, dismissible:false }); if(_icRespa) wrap.appendChild(_icRespa);
+    wrap.appendChild(insightCard('respa_warning', { inline:true, dismissible:false }));
   }
 
   // Three deliverable tiles
@@ -6001,7 +5890,7 @@ function renderNudges(){
     ),
   ));
 
-  const _icNudge = insightCard('lead_with_value'); if(_icNudge) page.appendChild(_icNudge);
+  page.appendChild(insightCard('lead_with_value'));
 
   const grid = e('div','nudge-grid');
   NUDGES.forEach(n => {
@@ -6133,8 +6022,8 @@ function renderSettings(){
 function renderSetAI(){
   const wrap = e('div');
 
-  // API Key panel — adapts based on shared key availability
-  const sharedAvailable = !!PARTNERS_API_KEY;
+  // API Key panel — Anthropic calls run through the Partners gateway (shared key)
+  const sharedAvailable = true;
   const userKey = getUserApiKey();
   const usingShared = !userKey && sharedAvailable;
 
@@ -6184,8 +6073,6 @@ function renderSetAI(){
         render();
       }}, 'Save'),
       e('button',{class:'btn btn-secondary', onclick:async ()=>{
-        const k = document.getElementById('api-key-input').value.trim() || PARTNERS_API_KEY;
-        if(!k){ toast('No key to test','error'); return; }
         const inputKey = document.getElementById('api-key-input').value.trim();
         if(inputKey) setApiKey(inputKey);
         toast('Testing…');
@@ -6390,11 +6277,11 @@ function renderSetValues(){
   const list = e('div',{style:{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'14px'}});
   state.valueMenu.forEach((v, i) => {
     list.appendChild(e('div',{style:{padding:'14px 16px',background:'var(--paper)',border:'1px solid var(--rule)',borderRadius:'10px'}},
-      e('div',{class:'field',style:{marginBottom:'10px'}},
+      e('div','field',{style:{marginBottom:'10px'}},
         e('label',null,'Service name'),
         e('input',{class:'fi', value: v.name, oninput: ev => { state.valueMenu[i].name = ev.target.value; save(); }}),
       ),
-      e('div',{class:'field',style:{marginBottom:'10px'}},
+      e('div','field',{style:{marginBottom:'10px'}},
         e('label',null,'Description'),
         e('input',{class:'fi', value: v.desc, oninput: ev => { state.valueMenu[i].desc = ev.target.value; save(); }}),
       ),
@@ -7094,7 +6981,7 @@ function parseCsv(text){
 
 
 /* ========== AUTH GATE RENDER ========== */
-let _authState = { mode:'signin', email:'', password:'', busy:false };
+let _authState = { stage:'idle', email:'', sending:false, msg:'' };
 
 function renderAuthGate(){
   const wrap = e('div','auth-gate');
@@ -7111,97 +6998,57 @@ function renderAuthGate(){
     e('div','blip blip-3'),
   )));
 
-  var isSignup = _authState.mode === 'signup';
-
   card.appendChild(e('div','eyebrow','Partners Marketing Studio'));
   card.appendChild(e('h1',null,'Realtor ', e('em',null,'Radar')));
-  card.appendChild(e('p','auth-lede', isSignup
-    ? 'Create your account with your Partners email and a password. Your pipeline syncs across every device you sign in on.'
-    : 'Sign in with your Partners email and password to pick up right where you left off.'));
+  card.appendChild(e('p','auth-lede','Sign in with your Partners email. We\u2019ll send you a one-time link — no password to remember.'));
 
-  card.appendChild(e('div','field',
-    e('label',null,'Partners email'),
-    e('input',{
-      type:'email', class:'fi', id:'auth-email-input',
-      placeholder: 'you' + (ALLOWED_EMAIL_DOMAIN || '@partnersmortgage.com'),
-      value: _authState.email,
-      autocomplete:'email',
-      oninput: ev => { _authState.email = ev.target.value; },
-      onkeydown: ev => { if(ev.key === 'Enter') document.getElementById('auth-pw-input').focus(); },
-    }),
-  ));
-
-  card.appendChild(e('div','field',
-    e('label',null,'Password'),
-    e('input',{
-      type:'password', class:'fi', id:'auth-pw-input',
-      placeholder: isSignup ? 'At least 6 characters' : 'Your password',
-      value: _authState.password,
-      autocomplete: isSignup ? 'new-password' : 'current-password',
-      oninput: ev => { _authState.password = ev.target.value; },
-      onkeydown: ev => { if(ev.key === 'Enter') document.getElementById('auth-submit-btn').click(); },
-    }),
-  ));
-
-  card.appendChild(e('button',{
-    class: 'btn btn-primary auth-btn', id:'auth-submit-btn',
-    disabled: _authState.busy,
-    onclick: async () => {
-      const email = (document.getElementById('auth-email-input').value || '').trim().toLowerCase();
-      const password = document.getElementById('auth-pw-input').value || '';
-      if(!email || !email.includes('@')){ toast('Enter a valid email','error'); return; }
-      if(ALLOWED_EMAIL_DOMAIN && !email.endsWith(ALLOWED_EMAIL_DOMAIN.toLowerCase())){
-        toast('Use your Partners email — only ' + ALLOWED_EMAIL_DOMAIN + ' is allowed','error'); return;
-      }
-      if(!password){ toast('Enter your password','error'); return; }
-      if(isSignup && password.length < 6){ toast('Password must be at least 6 characters','error'); return; }
-      _authState.busy = true; _authState.email = email; _authState.password = password;
-      renderAuthGateOnly();
-      try {
-        if(isSignup) await fbSignUp(email, password);
-        else await fbSignIn(email, password);
-        // onAuthStateChanged in init() takes over from here (loads data + renders app).
-        _authState.password = '';
-      } catch(err){
-        _authState.busy = false;
-        renderAuthGateOnly();
-        toast(friendlyAuthError(err),'error');
-      }
-    },
-  }, _authState.busy
-      ? e('span',null, e('span','spinner'), isSignup ? ' Creating…' : ' Signing in…')
-      : (isSignup ? 'Create account' : 'Sign in')));
-
-  // Forgot password (sign-in mode only)
-  if(!isSignup){
+  if(_authState.stage === 'sent'){
+    card.appendChild(e('div','auth-sent',
+      e('div',{style:{fontFamily:'var(--cond)',fontSize:'10.5px',letterSpacing:'1.4px',textTransform:'uppercase',color:'var(--brand)',fontWeight:'600',marginBottom:'8px'}}, 'Link sent'),
+      e('div',{style:{fontSize:'14px',color:'var(--ink-2)',lineHeight:'1.55'}},
+        'Check ', e('b',null, _authState.email), ' for a sign-in link from Partners. Click it on this device to finish.',
+      ),
+      e('div',{style:{fontSize:'12px',color:'var(--muted)',marginTop:'10px'}}, 'Didn\u2019t arrive? Check spam, or '),
+      e('button',{class:'btn btn-ghost btn-sm', style:{padding:'0',marginTop:'4px'}, onclick:()=>{ _authState = { stage:'idle', email:_authState.email, sending:false, msg:'' }; renderAuthGateOnly(); }}, 'Try again'),
+    ));
+  } else {
+    card.appendChild(e('div','field',
+      e('label',null,'Partners email'),
+      e('input',{
+        type:'email', class:'fi', id:'auth-email-input',
+        placeholder: 'you' + (ALLOWED_EMAIL_DOMAIN || '@partnersmortgage.com'),
+        value: _authState.email,
+        autocomplete:'email',
+        oninput: ev => { _authState.email = ev.target.value; },
+        onkeydown: ev => { if(ev.key === 'Enter') document.getElementById('auth-send-btn').click(); },
+      }),
+    ));
     card.appendChild(e('button',{
-      class:'btn btn-ghost btn-sm', style:{marginTop:'10px',fontSize:'12.5px'},
+      class: 'btn btn-primary auth-btn', id:'auth-send-btn',
+      disabled: _authState.sending,
       onclick: async () => {
         const email = (document.getElementById('auth-email-input').value || '').trim().toLowerCase();
-        if(!email || !email.includes('@')){ toast('Enter your email above first, then tap “Forgot password?”','error'); return; }
-        try {
-          await fbResetPassword(email);
-          toast('Password reset email sent to ' + email,'success');
-        } catch(err){ toast(friendlyAuthError(err),'error'); }
-      },
-    }, 'Forgot password?'));
-  }
-
-  // Toggle between sign in / create account
-  card.appendChild(e('div',{style:{marginTop:'16px',fontSize:'13px',color:'var(--ink-2)'}},
-    isSignup ? 'Already have an account? ' : 'First time here? ',
-    e('button',{
-      class:'btn btn-ghost btn-sm', style:{padding:'0',fontWeight:'700',color:'var(--brand)'},
-      onclick: () => {
-        _authState.mode = isSignup ? 'signin' : 'signup';
-        _authState.password = '';
+        if(!email || !email.includes('@')){ toast('Enter a valid email','error'); return; }
+        if(ALLOWED_EMAIL_DOMAIN && !email.endsWith(ALLOWED_EMAIL_DOMAIN.toLowerCase())){
+          toast('Use your Partners email — only ' + ALLOWED_EMAIL_DOMAIN + ' is allowed','error'); return;
+        }
+        _authState.sending = true; _authState.email = email;
         renderAuthGateOnly();
+        try {
+          await fbSendMagicLink(email);
+          _authState.stage = 'sent'; _authState.sending = false;
+          renderAuthGateOnly();
+        } catch(e){
+          _authState.sending = false;
+          renderAuthGateOnly();
+          toast('Couldn\u2019t send link: ' + (e.message || 'unknown error'),'error');
+        }
       },
-    }, isSignup ? 'Sign in' : 'Create one'),
-  ));
+    }, _authState.sending ? e('span',null, e('span','spinner'), ' Sending…') : 'Send me a sign-in link'));
 
-  if(ALLOWED_EMAIL_DOMAIN){
-    card.appendChild(e('div','auth-hint','Restricted to ' + ALLOWED_EMAIL_DOMAIN + ' accounts. Your data is yours alone — no other LO can see it.'));
+    if(ALLOWED_EMAIL_DOMAIN){
+      card.appendChild(e('div','auth-hint','Restricted to ' + ALLOWED_EMAIL_DOMAIN + ' accounts. Your data is yours alone — no other LO can see it.'));
+    }
   }
 
   card.appendChild(e('div','you-matter','❝ You matter. ❞'));
@@ -7222,13 +7069,12 @@ var _lastViewKey = null;
 /* ========== DEEP RESEARCH (shared by Research tab + Discover) ========== */
 async function fetchDossier(agent, opts){
   opts = opts || {};
-  const res = await callAnthropicRetry({
+  const res = await callAnthropic({
     system: 'You are a meticulous research analyst for a mortgage loan officer. You MUST use web search to find real, current, accurate information. Never fabricate. Return only JSON, no markdown fences.',
     messages: [{ role:'user', content: buildResearchPrompt(agent) }],
     maxTokens: 8192,
-    tools: [{ type:'web_search_20250305', name:'web_search', max_uses: 8 }],
-    timeoutMs: 120000,
-  }, 2);
+    tools: [{ type:'web_search_20250305', name:'web_search' }],
+  });
   if(res.error) return { error: res.text || 'Research failed' };
   const parsed = parseJsonLoose(res.text);
   if(!parsed) return { error: 'Could not parse research output' };
@@ -7253,7 +7099,7 @@ var _discoverExpanded = {};
 var _discoverRunId = 0;
 var DISC_SCAN_MS = 24000;
 var DISC_ENRICH_MS = 17000;
-var DISC_CONC = 2;
+var DISC_CONC = 3;
 
 function ensureDiscover(){
   if(!state.discover) state.discover = {};
@@ -7334,7 +7180,7 @@ function buildDiscoverPrompt(count){
   var tierLine = d.tierPref !== 'all' ? ('Prefer roughly Tier ' + d.tierPref + ' producers when possible.') : '';
   var hasCriteria = discCriteriaCount(d) > 0;
   var ask = Math.min(25, (count||8) + 6);
-  return 'You are helping a Loan Officer at Partners Mortgage find Real Estate Agents to build referral partnerships with. Use web search to find REAL, currently active, licensed agents. Keep this higher-level \u2014 a single pass. Do not deep-dive each person; surface the best matches with a short snapshot.\n\n'
+  return 'You are helping a Loan Officer at Partners Mortgage find Real Estate Agents to build referral partnerships with. Use web search to find REAL, currently active, licensed agents. This is a first-pass scan; a later step deep-researches each one.\n\n'
     + 'SEARCH AREA: ' + loc + '\n' + radiusLine + '\n\n'
     + 'What the LO wants to connect over:\n'
     + '- Shared interests/hobbies: ' + interests + '\n'
@@ -7393,27 +7239,14 @@ async function runDiscover(){
   _discoverEtaMs = DISC_SCAN_MS + Math.ceil(count/DISC_CONC) * DISC_ENRICH_MS;
   render();
   if(_discoverTimer) clearInterval(_discoverTimer);
-  _discoverTimer = setInterval(function(){
-    if(_discoverPhase==='scan'){
-      _discoverProgress = Math.min(23, _discoverProgress + 0.35);
-    } else if(_discoverPhase==='enrich' && _discoverEnrichTotal > 0){
-      // Gentle creep within the current agent's research window so the bar
-      // always moves, capped just below the next real completion milestone.
-      var seg = 72 / _discoverEnrichTotal;
-      var ceil = Math.min(96, 25 + (_discoverEnrichDone + 0.9) * seg);
-      if(_discoverProgress < ceil) _discoverProgress = Math.min(ceil, _discoverProgress + seg * 0.02);
-    }
-    paintProgress();
-  }, 400);
+  _discoverTimer = setInterval(function(){ if(_discoverPhase==='scan'){ _discoverProgress = Math.min(23, _discoverProgress + 0.35); } paintProgress(); }, 400);
 
-  try {
-  var scanRes = await callAnthropicRetry({
+  var scanRes = await callAnthropic({
     system: 'You are a real estate relationship-research analyst. You MUST use web search to find REAL, currently active real estate agents. Never fabricate people, brokerages, or details. Return only a JSON array, no markdown fences.',
     messages: [{ role:'user', content: buildDiscoverPrompt(count) }],
-    maxTokens: 4000,
-    tools: [{ type:'web_search_20250305', name:'web_search', max_uses: 6 }],
-    timeoutMs: 120000,
-  }, 3);
+    maxTokens: 8192,
+    tools: [{ type:'web_search_20250305', name:'web_search' }],
+  });
   if(scanRes.error){ finishDiscoverError(scanRes.text); return; }
   if(runId !== _discoverRunId) return;
   var arr = parseJsonLoose(scanRes.text);
@@ -7431,27 +7264,30 @@ async function runDiscover(){
     render(); toast('No matches at ' + minScore + '+ \u2014 try a lower minimum','');
     return;
   }
-  // SCAN-ONLY: deliver the matched agents immediately from the single scan call.
-  // Deep per-agent research is no longer run automatically (it was ~8 extra
-  // web-search calls per run and the bulk of the cost). The LO can run full
-  // research on demand from an agent's Research tab once added to the pipeline.
+  _discoverPhase='enrich'; _discoverEnrichTotal=picks.length; _discoverEnrichDone=0;
+  _discoverProgress=25; _discoverStatus='Found ' + picks.length + ' agents \u2014 starting deep research\u2026'; paintProgress();
+  await enrichPool(picks, DISC_CONC, async function(cand){
+    if(runId !== _discoverRunId) return;
+    _discoverStatus = 'Deep research: ' + (cand.name||'agent') + '\u2026'; paintProgress();
+    var soc = cand.social || {};
+    var dr = await fetchDossier({ name:cand.name, brokerage:cand.brokerage, area:cand.area, side:cand.side, tier:cand.tier, instagram:soc.instagram, linkedin:soc.linkedin, website:soc.website });
+    if(dr.dossier){ cand.dossier = dr.dossier; cand._enriched = true; }
+    else { cand._enrichErr = true; }
+    _discoverEnrichDone++;
+    _discoverProgress = 25 + (_discoverEnrichDone/_discoverEnrichTotal) * 72;
+    _discoverStatus = 'Researched ' + _discoverEnrichDone + ' of ' + _discoverEnrichTotal + ' agents'; paintProgress();
+  });
   if(_discoverTimer){ clearInterval(_discoverTimer); _discoverTimer = null; }
   if(runId !== _discoverRunId) return;
   _discoverProgress=100; paintProgress();
   _discoverRunning=false; _discoverResults=picks;
   _discoverMeta = { place: d.county?(d.county+', '+d.stateCode):d.place, radius:d.radius, count:picks.length, minScore:minScore, requested:count };
+  var enriched = picks.filter(function(p){ return p._enriched; }).length;
   render();
   notify('Discovery finished', {
-    sub: picks.length + ' agent' + (picks.length>1?'s':'') + ' found near ' + (d.county||d.place),
+    sub: picks.length + ' agent' + (picks.length>1?'s':'') + ' found near ' + (d.county||d.place) + (enriched<picks.length?(' \u00b7 ' + enriched + ' fully researched'):''),
     onClick: function(){ state.view='discover'; render(); },
   });
-  } catch(err){
-    // Last-resort guard: anything unexpected still clears the spinner and the
-    // timer (via finishDiscoverError) instead of leaving Discover frozen.
-    console.error('Discover run failed', err);
-    if(runId === _discoverRunId) finishDiscoverError('Search hit an unexpected error \u2014 please try again.');
-    else if(_discoverTimer){ clearInterval(_discoverTimer); _discoverTimer = null; }
-  }
 }
 function sortDiscover(arr){
   var by = (state.discover && state.discover.sortBy) || 'match';
@@ -7507,7 +7343,7 @@ function renderDiscover(){
   if(_discoverResults){ wrap.appendChild(discoverResults()); return wrap; }
   wrap.appendChild(e('div','disc-intro',
     e('h2',null,'Discover Realtors'),
-    e('p',null,'Find agents you actually share something with. Tell the radar where to look and what you connect over \u2014 hobbies, schools, hometown, background \u2014 set how many matches and how strong, and it surfaces real agents with a snapshot and the smartest way in \u2014 ready to add.'),
+    e('p',null,'Find agents you actually share something with. Tell the radar where to look and what you connect over \u2014 hobbies, schools, hometown, background \u2014 set how many matches and how strong, and it surfaces real agents, deep-researches each one, and hands them to you ready to add.'),
   ));
   wrap.appendChild(discoverForm());
   return wrap;
@@ -7523,14 +7359,14 @@ function discoverSearching(){
   });
   field.appendChild(e('div','dsf-core'));
   page.appendChild(field);
-  page.appendChild(e('div','disc-prog-title', 'Scanning the area\u2026'));
+  page.appendChild(e('div','disc-prog-title', _discoverPhase==='scan'?'Scanning the area\u2026':'Deep-researching your matches\u2026'));
   page.appendChild(e('div',{class:'disc-prog-status', id:'disc-status'}, _discoverStatus||'Working\u2026'));
   page.appendChild(e('div','disc-prog-track', e('div',{class:'disc-prog-bar', id:'disc-bar', style:{width:_discoverProgress+'%'}})));
   page.appendChild(e('div','disc-prog-meta',
     e('span',{id:'disc-elapsed'},'Elapsed 0s'),
     e('span',{id:'disc-progresspct'}, Math.round(_discoverProgress)+'%'),
   ));
-  page.appendChild(e('div','disc-prog-hint','A quick, higher-level scan for real agents you share something with \u2014 with a snapshot and the best angle in. Add the ones you like, then run full research on them on demand.'));
+  page.appendChild(e('div','disc-prog-hint','Each match gets a full deep-research workup before it reaches you \u2014 hobbies, recent activity, production, and the smartest way in. This can take a few minutes; you can keep working and we\u2019ll ping you when it\u2019s done.'));
   page.appendChild(e('button',{class:'btn btn-ghost btn-sm', style:{marginTop:'22px'}, onclick:startOverDiscover}, 'Cancel'));
   setTimeout(paintProgress, 30);
   return page;
@@ -7597,7 +7433,7 @@ function discoverForm(){
     e('button',{ class:'btn btn-primary btn-discover', onclick:runDiscover, disabled:!hasKey?true:undefined }, e('span',{style:{marginRight:'8px'}},'\u25CE'), 'Discover agents'),
     !hasKey ? e('span','cta-note','Add an Anthropic API key in Settings \u2192 AI to enable discovery.')
       : (noCriteria ? e('span','cta-note','No interests entered yet \u2014 it\u2019ll return the most relevant active agents in the area. Add a hobby, school, or background to rank by what you share.')
-        : e('span','cta-note','A quick higher-level scan \u2014 usually well under a minute. Run full research per agent after you add them.')),
+        : e('span','cta-note','Finds, then deep-researches each match \u2014 a full scan takes a couple of minutes.')),
   ));
   return form;
 }
@@ -7629,7 +7465,7 @@ function discoverResults(){
   var grid = e('div','disc-grid');
   results.forEach(function(r){ grid.appendChild(discoverCard(r)); });
   wrap.appendChild(grid);
-  wrap.appendChild(e('div',{style:{fontSize:'11.5px',color:'var(--muted-2)',marginTop:'18px',lineHeight:'1.5'}}, 'Matches are AI-assembled from public sources and may be incomplete \u2014 confirm details before reaching out. Run full research on an agent\u2019s Research tab once you\u2019ve added them.'));
+  wrap.appendChild(e('div',{style:{fontSize:'11.5px',color:'var(--muted-2)',marginTop:'18px',lineHeight:'1.5'}}, 'Matches are AI-assembled from public sources and may be incomplete \u2014 confirm details before reaching out. Added agents arrive with their research already attached.'));
   return wrap;
 }
 function discDossierFull(dz){
@@ -7721,57 +7557,9 @@ function renderViewContent(){
   }
 }
 
-/* Coerce persisted state into a safe shape before every render. State saved by
-   an older build (or a partial/interrupted save) can be missing arrays, have a
-   null voice/valueMenu, or carry invalid dates — any of which would throw inside
-   a view renderer and make that tab look "dead." Normalizing here makes the app
-   resilient to schema drift regardless of where the data came from. */
-function normalizeState(){
-  if(!state || typeof state !== 'object') return;
-  var todayISO = new Date().toISOString();
-  var todayYMD = todayISO.slice(0,10);
-  if(!Array.isArray(state.agents)) state.agents = [];
-  state.agents.forEach(function(a){
-    if(!a || typeof a !== 'object') return;
-    if(!Array.isArray(a.completedSteps)) a.completedSteps = [];
-    if(!Array.isArray(a.activity)) a.activity = [];
-    if(!Array.isArray(a.messages)) a.messages = [];
-    if(!Array.isArray(a.selectedValues)) a.selectedValues = [];
-    if(!a.deliverables || typeof a.deliverables !== 'object') a.deliverables = { plan:null, menu:null, deck:null };
-    if(a.dossier === undefined) a.dossier = null;
-    if(!a.stage) a.stage = 'identified';
-    if(!a.cadence) a.cadence = 'cold_solo';
-    if(!a.side) a.side = 'buyer';
-    if(!a.tier) a.tier = 'C';
-    if(isNaN(new Date(a.createdAt).getTime())) a.createdAt = todayISO;
-    if(isNaN(new Date(a.cadenceStartedAt).getTime())) a.cadenceStartedAt = todayYMD;
-  });
-  if(!Array.isArray(state.valueMenu)) state.valueMenu = DEFAULT_VALUE_MENU.slice();
-  if(!Array.isArray(state.brandFacts)) state.brandFacts = DEFAULT_BRAND_FACTS.slice();
-  if(!Array.isArray(state.dismissedInsights)) state.dismissedInsights = [];
-  if(!state.voice || typeof state.voice !== 'object') state.voice = { description:'', examples:[] };
-  if(typeof state.voice.description !== 'string') state.voice.description = '';
-  if(!Array.isArray(state.voice.examples)) state.voice.examples = [];
-  if(!state.loSettings || typeof state.loSettings !== 'object') state.loSettings = { name:'', nmls:'', branch:'', email:'', phone:'', slaPreQual:'24 hours', slaClose:'28 days' };
-  if(!state.customCadences || typeof state.customCadences !== 'object') state.customCadences = {};
-}
-
-/* Non-fatal fallback when a single view throws: show the cause on-screen and
-   keep every other tab working, instead of silently killing navigation. */
-function renderViewError(view, err){
-  return e('div','main-inner',
-    e('div',{style:{maxWidth:'620px',margin:'60px auto',padding:'34px',background:'var(--paper)',border:'1px solid var(--gold)',borderRadius:'16px',textAlign:'center',boxShadow:'var(--shadow)'}},
-      e('div',{style:{fontFamily:'var(--cond)',fontSize:'11px',letterSpacing:'1.6px',textTransform:'uppercase',color:'var(--gold-2)',fontWeight:'700',marginBottom:'10px'}}, 'This view hit a snag'),
-      e('div',{style:{fontFamily:'var(--serif)',fontSize:'24px',color:'var(--navy)',marginBottom:'12px'}}, 'We couldn\u2019t open ', e('em',null, String(view||'this tab'))),
-      e('div',{style:{fontSize:'14px',color:'var(--ink-2)',lineHeight:'1.6',marginBottom:'18px'}}, 'Your data is safe and your other tabs still work. This usually means a record saved by an older version. Send Aidan the line below and he\u2019ll sort it.'),
-      e('div',{style:{fontSize:'12px',color:'var(--muted)',fontFamily:'ui-monospace,monospace',background:'var(--cream)',padding:'12px 14px',borderRadius:'8px',wordBreak:'break-word',textAlign:'left'}}, String((err && (err.message || err.toString())) || 'Unknown error')),
-    ),
-  );
-}
-
 function render(){
   const root = document.getElementById('app');
-  normalizeState();
+  if(!state.customCadences) state.customCadences = {};
 
   // Full-screen takeovers replace everything and reset the shell
   if(auth.mode === 'firebase' && !auth.user){ root.innerHTML=''; _shell=null; _lastViewKey=null; root.appendChild(renderAuthGate()); return; }
@@ -7800,13 +7588,7 @@ function render(){
     updateTopbar(_shell.topbar);
   }
 
-  let content;
-  try {
-    content = renderViewContent();
-  } catch(err){
-    console.error('View render failed for "' + state.view + '":', err);
-    content = renderViewError(state.view, err);
-  }
+  const content = renderViewContent();
   const key = state.view + '|' + (state.activeAgentId || '') + '|' + (state.view === 'agent' ? (state.activeTab || '') : '');
   const animate = key !== _lastViewKey;
   if(animate) content.classList.add('view-enter');
@@ -7847,31 +7629,36 @@ async function init(){
       return;
     }
 
-    // Email/password: the session is restored automatically (Firebase persists
-    // it locally). onAuthStateChanged fires with the current user, or null.
-    window.RR_FB.onAuthStateChanged(_fbAuth, async (user) => {
-      if(user){
-        // Validate domain
-        if(ALLOWED_EMAIL_DOMAIN && user.email && !user.email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN.toLowerCase())){
-          toast('That email isn\u2019t authorized for Realtor Radar','error');
-          await fbSignOut();
+    // If returning from email link, finish sign-in BEFORE rendering anything
+    fbCompleteSignIn().then(() => {
+      window.RR_FB.onAuthStateChanged(_fbAuth, async (user) => {
+        if(user){
+          // Validate domain
+          if(ALLOWED_EMAIL_DOMAIN && user.email && !user.email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN.toLowerCase())){
+            toast('That email isn\u2019t authorized for Realtor Radar','error');
+            await fbSignOut();
+            auth.user = null;
+            render();
+            return;
+          }
+          auth.user = user;
+          // Load user's data + templates
+          try {
+            await loadTemplates();
+            const loaded = await load();
+            if(!state.loSettings.email && user.email) state.loSettings.email = user.email;
+            if(!loaded){ state.onboarded = false; }
+          } catch(e){ console.error('Data load failed', e); }
+          render();
+        } else {
           auth.user = null;
           render();
-          return;
         }
-        auth.user = user;
-        // Load user's data + templates
-        try {
-          await loadTemplates();
-          const loaded = await load();
-          if(!state.loSettings.email && user.email) state.loSettings.email = user.email;
-          if(!loaded){ state.onboarded = false; }
-        } catch(e){ console.error('Data load failed', e); }
-        render();
-      } else {
-        auth.user = null;
-        render();
-      }
+      });
+    }).catch(err => {
+      console.error('Sign-in completion failed — showing sign-in screen', err);
+      auth.user = null;
+      render();
     });
   };
 
